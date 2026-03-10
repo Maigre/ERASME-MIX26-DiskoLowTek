@@ -1,0 +1,82 @@
+{
+  "dmx": {
+    "port": "/dev/ttyUSB0",
+    "baudrate": 57600
+  },
+  "projectors": [
+    {
+      "name": "Projector 1",
+      "start_channel": 1,
+      "channels": {
+        "dimmer": 0,
+        "red": 1,
+        "green": 2,
+        "blue": 3,
+        "white": 4,
+        "color_macro": 5,
+        "strobe": 6,
+        "auto": 7,
+        "auto_speed": 8,
+        "dimmer_speed": 9,
+        "zoom": 10,
+        "zoom_reset": 11
+      }
+    },
+    {
+      "name": "Projector 2",
+      "start_channel": 13, 
+      "channels": {
+        "dimmer": 0,
+        "red": 1,
+        "green": 2,
+        "blue": 3,
+        "white": 4,
+        "color_macro": 5,
+        "strobe": 6,
+        "auto": 7,
+        "auto_speed": 8,
+        "dimmer_speed": 9,
+        "zoom": 10,
+        "zoom_reset": 11
+      }
+    },
+    {
+      "name": "Projector 3",
+      "start_channel": 25,
+      "channels": {
+        "dimmer": 0,
+        "red": 1,
+        "green": 2,
+        "blue": 3,
+        "white": 4,
+        "color_macro": 5,
+        "strobe": 6,
+        "auto": 7,
+        "auto_speed": 8,
+        "dimmer_speed": 9,
+        "zoom": 10,
+        "zoom_reset": 11
+      }
+    }
+  ],
+  "touch_mapping": {
+    "colors": {
+      "up":    { "index": 0, "label": "Color 1" },
+      "left":  { "index": 1, "label": "Color 2" },
+      "right": { "index": 2, "label": "Color 3" },
+      "down":  { "index": 3, "label": "Color 4" }
+    },
+    "animations": {
+      "w": { "type": "strobe", "speed_index": 0, "label": "Strobe 1" },
+      "a": { "type": "strobe", "speed_index": 1, "label": "Strobe 2" },
+      "s": { "type": "strobe", "speed_index": 2, "label": "Strobe 3" },
+      "d": { "type": "chase",  "speed_index": 0, "label": "Chase 1" },
+      "f": { "type": "chase",  "speed_index": 1, "label": "Chase 2" },
+      "g": { "type": "chase",  "speed_index": 2, "label": "Chase 3" }
+    }
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5000
+  }
+}

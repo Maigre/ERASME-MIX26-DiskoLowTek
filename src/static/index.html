@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIX LowTech26 — DMX Controller</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #1c1c1c;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        header {
+            background: #252525;
+            padding: 0.8rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #3a3a3a;
+        }
+        header h1 { font-size: 1.2rem; color: #e94560; }
+        .badges { display: flex; gap: 0.5rem; }
+        .badge {
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-ok { background: #27ae60; color: #fff; }
+        .badge-warn { background: #f39c12; color: #1a1a2e; }
+        .badge-off { background: #c0392b; color: #fff; }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 1rem;
+            display: grid;
+            gap: 1rem;
+        }
+        .section {
+            background: #252525;
+            border-radius: 10px;
+            padding: 1rem;
+            border: 1px solid #3a3a3a;
+        }
+        .section h2 {
+            font-size: 1rem;
+            margin-bottom: 0.8rem;
+            color: #e94560;
+        }
+
+        /* Row layout: pad on left, settings card on right */
+        .pad-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .pad-row:last-child { border-bottom: none; }
+
+        .pad-cell {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.2rem;
+            flex-shrink: 0;
+            width: 72px;
+            user-select: none;
+            -webkit-user-select: none;
+            cursor: pointer;
+        }
+        .pad-key {
+            width: 56px;
+            height: 56px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: monospace;
+            font-weight: 700;
+            font-size: 1.1rem;
+            border: 2px solid #444;
+            background: #2e2e2e;
+            color: #888;
+            transition: all 0.08s ease;
+        }
+        .pad-key.pressed {
+            transform: scale(1.08);
+            box-shadow: 0 0 18px rgba(233, 69, 96, 0.5);
+            border-color: #ff6b81;
+            color: #fff;
+        }
+        .pad-key.locked {
+            border-style: dashed;
+        }
+        .pad-key.color-pad.pressed {
+            box-shadow: 0 0 18px var(--pad-color, #e94560);
+            border-color: var(--pad-color, #e94560);
+        }
+        .pad-key.anim-pad.pressed {
+            background: #e94560;
+            border-color: #ff6b81;
+        }
+        .pad-label {
+            font-size: 0.6rem;
+            color: #666;
+            text-align: center;
+        }
+        .pad-key.pressed ~ .pad-label { color: #e94560; }
+
+        .setting-cell {
+            flex: 1;
+            min-width: 0;
+        }
+        .setting-cell .color-swatch {
+            width: 100%;
+            height: 30px;
+            border-radius: 6px;
+            border: 1px solid #555;
+            cursor: pointer;
+            margin-bottom: 0.3rem;
+        }
+        .setting-cell .color-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 0.3rem;
+        }
+        .setting-cell .color-inputs label {
+            font-size: 0.7rem;
+            color: #888;
+            display: flex;
+            flex-direction: column;
+            gap: 0.1rem;
+        }
+        .setting-cell .color-inputs input {
+            width: 100%;
+            background: #2e2e2e;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #e0e0e0;
+            padding: 0.2rem 0.3rem;
+            font-size: 0.75rem;
+            text-align: center;
+        }
+        .setting-cell .speed-slider { width: 100%; }
+        .setting-cell .speed-slider input[type="range"] {
+            width: 100%;
+            height: 6px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: linear-gradient(to right, #2e2e2e, #e94560);
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+        }
+        .setting-cell .speed-slider input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+        }
+        .setting-cell .speed-val {
+            font-size: 0.75rem;
+            color: #aaa;
+            text-align: right;
+            margin-top: 0.15rem;
+        }
+
+        /* Projector previews */
+        .proj-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.8rem;
+        }
+        .proj-card {
+            background: #1c1c1c;
+            border-radius: 8px;
+            padding: 0.8rem;
+            border: 1px solid #3a3a3a;
+            text-align: center;
+        }
+        .proj-card h4 { font-size: 0.8rem; color: #aaa; margin-bottom: 0.4rem; }
+        .proj-preview {
+            width: 100%;
+            height: 50px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            transition: background-color 0.15s;
+        }
+        .proj-values {
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 0.3rem;
+            font-family: monospace;
+        }
+
+        /* Master Dimmer */
+        .master-row {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        .master-slider { flex: 1; }
+        .master-slider input[type="range"] {
+            width: 100%;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: linear-gradient(to right, #1c1c1c, #fff);
+            border-radius: 4px;
+            outline: none;
+            cursor: pointer;
+        }
+        .master-slider input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px; height: 20px;
+            border-radius: 50%;
+            background: #e94560;
+            cursor: pointer;
+        }
+        .master-val {
+            font-size: 0.9rem;
+            font-weight: 600;
+            min-width: 35px;
+            text-align: right;
+        }
+
+        /* Mix preview */
+        .mix-preview {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            margin-bottom: 0.6rem;
+        }
+        .mix-swatch {
+            width: 60px;
+            height: 36px;
+            border-radius: 6px;
+            border: 1px solid #555;
+            transition: background-color 0.15s;
+        }
+        .mix-label {
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+
+        @media (max-width: 600px) {
+            .proj-row { grid-template-columns: 1fr; }
+            .pad-key { width: 48px; height: 48px; font-size: 0.95rem; }
+            .pad-cell { width: 60px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>MIX LowTech26 — DMX</h1>
+        <div class="badges">
+            <span class="badge badge-off" id="dmxBadge">DMX</span>
+            <span class="badge badge-off" id="makeyBadge">Makey</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Master Dimmer -->
+        <div class="section">
+            <h2>Master Dimmer</h2>
+            <div class="master-row">
+                <div class="master-slider">
+                    <input type="range" id="masterDimmer" min="0" max="255" value="255">
+                </div>
+                <span class="master-val" id="masterVal">255</span>
+            </div>
+        </div>
+
+        <!-- Colors -->
+        <div class="section">
+            <h2>Colors</h2>
+            <div class="mix-preview">
+                <div class="mix-swatch" id="mixSwatch"></div>
+                <span class="mix-label" id="mixLabel">&mdash;</span>
+            </div>
+            <div id="colorRows"></div>
+        </div>
+
+        <!-- Animations -->
+        <div class="section">
+            <h2>Animations</h2>
+            <div id="animRows"></div>
+        </div>
+
+        <!-- Projectors -->
+        <div class="section">
+            <h2>Projectors</h2>
+            <div class="proj-row" id="projRow"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        const KEY_LABELS = {
+            'up': '\u2191', 'down': '\u2193', 'left': '\u2190', 'right': '\u2192',
+            'space': '\u2423',
+        };
+
+        let keysInfo = {};
+        let currentSettings = {};
+        let keyStates = {};
+        const lockedKeys = new Set();    // double-click locked pads
+        const dblClickTimers = {};       // for detecting double-click
+
+        // ---- Socket events ----
+
+        socket.on('connect', () => { socket.emit('get_state'); });
+
+        socket.on('status', (data) => {
+            const dmx = document.getElementById('dmxBadge');
+            const mk = document.getElementById('makeyBadge');
+            dmx.textContent = data.dmx_dummy ? 'DMX: Sim' : (data.dmx_connected ? 'DMX: On' : 'DMX: Off');
+            dmx.className = 'badge ' + (data.dmx_connected ? (data.dmx_dummy ? 'badge-warn' : 'badge-ok') : 'badge-off');
+            mk.textContent = data.makey_connected ? 'Makey: On' : 'Makey: Web';
+            mk.className = 'badge ' + (data.makey_connected ? 'badge-ok' : 'badge-warn');
+        });
+
+        socket.on('keys_info', (info) => {
+            keysInfo = info;
+            tryBuild();
+        });
+
+        socket.on('key_state', (data) => {
+            keyStates[data.key] = data.pressed;
+            updatePadVisual(data.key);
+        });
+
+        socket.on('key_states', (states) => {
+            keyStates = states;
+            for (const k of Object.keys(states)) updatePadVisual(k);
+        });
+
+        socket.on('state_update', (state) => {
+            updateProjectors(state.projectors);
+            updateMixPreview(state);
+        });
+
+        socket.on('settings_update', (s) => {
+            currentSettings = s;
+            document.getElementById('masterDimmer').value = s.master_dimmer || 255;
+            document.getElementById('masterVal').textContent = s.master_dimmer || 255;
+            tryBuild();
+        });
+
+        // ---- Build rows ----
+
+        let _built = false;
+        function tryBuild() {
+            if (Object.keys(keysInfo).length === 0 || !currentSettings.colors) return;
+            if (_built) { updateValues(); return; }
+            _built = true;
+            buildColorRows();
+            buildAnimRows();
+        }
+
+        function buildColorRows() {
+            const container = document.getElementById('colorRows');
+            container.innerHTML = '';
+            const colorKeys = Object.entries(keysInfo)
+                .filter(([, info]) => info.type === 'color')
+                .sort((a, b) => a[1].index - b[1].index);
+
+            colorKeys.forEach(([key, info]) => {
+                const c = currentSettings.colors[info.index];
+                if (!c) return;
+                const i = info.index;
+                const row = document.createElement('div');
+                row.className = 'pad-row';
+
+                // Pad cell
+                const padCell = document.createElement('div');
+                padCell.className = 'pad-cell';
+                const keyEl = document.createElement('div');
+                keyEl.className = 'pad-key color-pad';
+                keyEl.id = 'pad-' + key;
+                keyEl.textContent = KEY_LABELS[key] || key.toUpperCase();
+                applyPadColor(keyEl, c);
+                if (keyStates[key]) keyEl.classList.add('pressed');
+
+                attachPadEvents(keyEl, key);
+
+                const label = document.createElement('div');
+                label.className = 'pad-label';
+                label.textContent = info.label;
+                padCell.appendChild(keyEl);
+                padCell.appendChild(label);
+
+                // Setting cell
+                const setCell = document.createElement('div');
+                setCell.className = 'setting-cell';
+                setCell.innerHTML =
+                    '<div class="color-swatch" id="cswatch-' + i + '" style="background:rgb(' + c.r + ',' + c.g + ',' + c.b + ')"></div>' +
+                    '<div class="color-inputs">' +
+                        '<label>R<input type="number" id="cinp-' + i + '-r" min="0" max="255" value="' + c.r + '"></label>' +
+                        '<label>G<input type="number" id="cinp-' + i + '-g" min="0" max="255" value="' + c.g + '"></label>' +
+                        '<label>B<input type="number" id="cinp-' + i + '-b" min="0" max="255" value="' + c.b + '"></label>' +
+                    '</div>';
+
+                const swatch = setCell.querySelector('.color-swatch');
+                const picker = document.createElement('input');
+                picker.type = 'color';
+                picker.style.display = 'none';
+                setCell.appendChild(picker);
+                swatch.addEventListener('click', () => {
+                    const cr = parseInt(document.getElementById('cinp-' + i + '-r').value) || 0;
+                    const cg = parseInt(document.getElementById('cinp-' + i + '-g').value) || 0;
+                    const cb = parseInt(document.getElementById('cinp-' + i + '-b').value) || 0;
+                    picker.value = rgbToHex(cr, cg, cb);
+                    picker.click();
+                });
+                picker.addEventListener('input', () => {
+                    const rgb = hexToRgb(picker.value);
+                    document.getElementById('cinp-' + i + '-r').value = rgb[0];
+                    document.getElementById('cinp-' + i + '-g').value = rgb[1];
+                    document.getElementById('cinp-' + i + '-b').value = rgb[2];
+                    swatch.style.backgroundColor = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+                    socket.emit('set_color', {index: i, r: rgb[0], g: rgb[1], b: rgb[2]});
+                });
+                ['r','g','b'].forEach(ch => {
+                    setCell.querySelector('#cinp-' + i + '-' + ch).addEventListener('change', () => {
+                        const r = parseInt(document.getElementById('cinp-' + i + '-r').value) || 0;
+                        const g = parseInt(document.getElementById('cinp-' + i + '-g').value) || 0;
+                        const b = parseInt(document.getElementById('cinp-' + i + '-b').value) || 0;
+                        swatch.style.backgroundColor = 'rgb(' + r + ',' + g + ',' + b + ')';
+                        socket.emit('set_color', {index: i, r: r, g: g, b: b});
+                    });
+                });
+
+                row.appendChild(padCell);
+                row.appendChild(setCell);
+                container.appendChild(row);
+            });
+        }
+
+        function buildAnimRows() {
+            const container = document.getElementById('animRows');
+            container.innerHTML = '';
+            const animKeys = Object.entries(keysInfo)
+                .filter(([, info]) => info.type === 'animation');
+
+            animKeys.forEach(([key, info]) => {
+                const row = document.createElement('div');
+                row.className = 'pad-row';
+
+                // Pad cell
+                const padCell = document.createElement('div');
+                padCell.className = 'pad-cell';
+                const keyEl = document.createElement('div');
+                keyEl.className = 'pad-key anim-pad';
+                keyEl.id = 'pad-' + key;
+                keyEl.textContent = KEY_LABELS[key] || key.toUpperCase();
+                if (keyStates[key]) keyEl.classList.add('pressed');
+
+                attachPadEvents(keyEl, key);
+
+                const label = document.createElement('div');
+                label.className = 'pad-label';
+                label.textContent = info.label;
+                padCell.appendChild(keyEl);
+                padCell.appendChild(label);
+
+                // Speed setting cell
+                const setCell = document.createElement('div');
+                setCell.className = 'setting-cell';
+                const isStrobe = info.anim_type === 'strobe';
+                const speedIdx = info.speed_index;
+                const speeds = isStrobe ? currentSettings.strobe_speeds : currentSettings.chase_speeds;
+                const s = speeds ? speeds[speedIdx] : { hz: 5 };
+                const prefix = isStrobe ? 'strobe' : 'chase';
+                const minHz = isStrobe ? 1 : 0.5;
+                const maxHz = isStrobe ? 20 : 15;
+                const stepHz = isStrobe ? 1 : 0.5;
+
+                setCell.innerHTML =
+                    '<div class="speed-slider">' +
+                        '<input type="range" id="' + prefix + '-sl-' + speedIdx + '" min="' + minHz + '" max="' + maxHz + '" step="' + stepHz + '" value="' + s.hz + '">' +
+                    '</div>' +
+                    '<div class="speed-val" id="' + prefix + '-vl-' + speedIdx + '">' + s.hz + ' Hz</div>';
+
+                const emitEvent = isStrobe ? 'set_strobe_speed' : 'set_chase_speed';
+                setCell.querySelector('input').addEventListener('input', function() {
+                    document.getElementById(prefix + '-vl-' + speedIdx).textContent = this.value + ' Hz';
+                    socket.emit(emitEvent, {index: speedIdx, hz: parseFloat(this.value)});
+                });
+
+                row.appendChild(padCell);
+                row.appendChild(setCell);
+                container.appendChild(row);
+            });
+        }
+
+        // ---- Pad events with double-click lock ----
+
+        function attachPadEvents(el, key) {
+            const DBL_CLICK_MS = 350;
+
+            const doPress = () => {
+                if (lockedKeys.has(key)) {
+                    // unlock on any click
+                    lockedKeys.delete(key);
+                    el.classList.remove('locked');
+                    socket.emit('key_release', {key: key});
+                    return;
+                }
+
+                // Check for double-click
+                const now = Date.now();
+                if (dblClickTimers[key] && (now - dblClickTimers[key]) < DBL_CLICK_MS) {
+                    // Double-click: lock
+                    delete dblClickTimers[key];
+                    lockedKeys.add(key);
+                    el.classList.add('locked');
+                    socket.emit('key_press', {key: key});
+                    return;
+                }
+                dblClickTimers[key] = now;
+                socket.emit('key_press', {key: key});
+            };
+
+            const doRelease = () => {
+                if (lockedKeys.has(key)) return; // stay pressed when locked
+                socket.emit('key_release', {key: key});
+            };
+
+            el.addEventListener('mousedown', (e) => { e.preventDefault(); doPress(); });
+            el.addEventListener('mouseup', (e) => { e.preventDefault(); doRelease(); });
+            el.addEventListener('mouseleave', (e) => { e.preventDefault(); doRelease(); });
+            el.addEventListener('touchstart', (e) => { e.preventDefault(); doPress(); }, {passive: false});
+            el.addEventListener('touchend', (e) => { e.preventDefault(); doRelease(); }, {passive: false});
+            el.addEventListener('touchcancel', (e) => { e.preventDefault(); doRelease(); }, {passive: false});
+        }
+
+        // ---- Update helpers ----
+
+        function updatePadVisual(key) {
+            const el = document.getElementById('pad-' + key);
+            if (!el) return;
+            const pressed = keyStates[key] || lockedKeys.has(key);
+            el.classList.toggle('pressed', pressed);
+        }
+
+        function applyPadColor(el, c) {
+            el.style.setProperty('--pad-color', 'rgb(' + c.r + ',' + c.g + ',' + c.b + ')');
+            el.style.background = 'rgba(' + c.r + ',' + c.g + ',' + c.b + ',0.3)';
+        }
+
+        function updateValues() {
+            // Update color pad colors + setting values
+            for (const [key, info] of Object.entries(keysInfo)) {
+                if (info.type === 'color') {
+                    const c = currentSettings.colors[info.index];
+                    if (!c) continue;
+                    const el = document.getElementById('pad-' + key);
+                    if (el) applyPadColor(el, c);
+                    const sw = document.getElementById('cswatch-' + info.index);
+                    if (sw) sw.style.backgroundColor = 'rgb(' + c.r + ',' + c.g + ',' + c.b + ')';
+                    ['r','g','b'].forEach(ch => {
+                        const inp = document.getElementById('cinp-' + info.index + '-' + ch);
+                        if (inp && document.activeElement !== inp) inp.value = c[ch];
+                    });
+                }
+            }
+            // Update speed sliders
+            (currentSettings.strobe_speeds || []).forEach((s, i) => {
+                const sl = document.getElementById('strobe-sl-' + i);
+                const vl = document.getElementById('strobe-vl-' + i);
+                if (sl && document.activeElement !== sl) sl.value = s.hz;
+                if (vl) vl.textContent = s.hz + ' Hz';
+            });
+            (currentSettings.chase_speeds || []).forEach((s, i) => {
+                const sl = document.getElementById('chase-sl-' + i);
+                const vl = document.getElementById('chase-vl-' + i);
+                if (sl && document.activeElement !== sl) sl.value = s.hz;
+                if (vl) vl.textContent = s.hz + ' Hz';
+            });
+        }
+
+        // ---- Projectors ----
+
+        function updateProjectors(projectors) {
+            if (!projectors) return;
+            const row = document.getElementById('projRow');
+            if (row.children.length === 0) {
+                projectors.forEach((p, i) => {
+                    const card = document.createElement('div');
+                    card.className = 'proj-card';
+                    card.innerHTML =
+                        '<h4>' + p.name + '</h4>' +
+                        '<div class="proj-preview" id="projPrev-' + i + '"></div>' +
+                        '<div class="proj-values" id="projVal-' + i + '"></div>';
+                    row.appendChild(card);
+                });
+            }
+            projectors.forEach((p, i) => {
+                const s = p.state;
+                const r = s.red||0, g = s.green||0, b = s.blue||0, w = s.white||0;
+                const d = (s.dimmer||0) / 255;
+                // Reconstruct display color from RGBW
+                const dr = Math.round(Math.min(255, r + w) * d);
+                const dg = Math.round(Math.min(255, g + w) * d);
+                const db = Math.round(Math.min(255, b + w) * d);
+                const prev = document.getElementById('projPrev-' + i);
+                if (prev) prev.style.backgroundColor = 'rgb(' + dr + ',' + dg + ',' + db + ')';
+                const val = document.getElementById('projVal-' + i);
+                if (val) val.textContent = 'R:' + r + ' G:' + g + ' B:' + b + ' W:' + w + ' D:' + (s.dimmer||0);
+            });
+        }
+
+        // ---- Mix preview (persists last color) ----
+
+        function updateMixPreview(state) {
+            const swatch = document.getElementById('mixSwatch');
+            const label = document.getElementById('mixLabel');
+            const lc = state.last_color || [0,0,0];
+            const ac = state.active_colors || [];
+            const anim = state.active_animation;
+            const d = (state.master_dimmer || 255) / 255;
+
+            // Always show last_color — never revert to black
+            swatch.style.backgroundColor = 'rgb(' +
+                Math.round(lc[0]*d) + ',' +
+                Math.round(lc[1]*d) + ',' +
+                Math.round(lc[2]*d) + ')';
+
+            let txt = '';
+            if (ac.length > 0) {
+                txt = 'Colors: ' + ac.map(i => i + 1).join('+');
+            } else if (lc[0] || lc[1] || lc[2]) {
+                txt = 'Last color';
+            }
+            if (anim) txt += (txt ? ' | ' : '') + anim[0] + ' ' + (anim[1]+1);
+            label.textContent = txt || '\u2014';
+        }
+
+        // ---- Master Dimmer ----
+
+        document.getElementById('masterDimmer').addEventListener('input', function() {
+            document.getElementById('masterVal').textContent = this.value;
+            socket.emit('set_master_dimmer', {value: parseInt(this.value)});
+        });
+
+        // ---- Keyboard passthrough ----
+
+        const keyMap = {
+            'ArrowUp': 'up', 'ArrowDown': 'down',
+            'ArrowLeft': 'left', 'ArrowRight': 'right',
+            ' ': 'space',
+        };
+        const heldKeys = new Set();
+
+        document.addEventListener('keydown', (e) => {
+            const key = keyMap[e.key] || e.key.toLowerCase();
+            if (key in keysInfo && !heldKeys.has(key)) {
+                e.preventDefault();
+                heldKeys.add(key);
+                socket.emit('key_press', {key: key});
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            const key = keyMap[e.key] || e.key.toLowerCase();
+            if (heldKeys.has(key)) {
+                e.preventDefault();
+                heldKeys.delete(key);
+                if (!lockedKeys.has(key)) {
+                    socket.emit('key_release', {key: key});
+                }
+            }
+        });
+
+        // ---- Helpers ----
+
+        function rgbToHex(r, g, b) {
+            return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
+        }
+        function hexToRgb(hex) {
+            const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+            return m ? [parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)] : [0,0,0];
+        }
+
+        // Poll state
+        setInterval(() => socket.emit('get_state'), 250);
+    </script>
+</body>
+</html>
