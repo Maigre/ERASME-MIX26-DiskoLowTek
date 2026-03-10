@@ -357,6 +357,8 @@
             if (!file) return;
             const audio = new Audio('/samples/' + encodeURIComponent(file));
             audio.loop = true;
+            // Random pitch: semitone range -4 to +4 (≈0.79× to 1.26×)
+            audio.playbackRate = Math.pow(2, (Math.random() * 8 - 4) / 12);
             audio.play().catch(e => console.warn('Audio play failed:', e));
             audioPlayers[key] = audio;
         }
