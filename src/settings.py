@@ -27,6 +27,7 @@ DEFAULT_SETTINGS = {
         {"hz": 8,  "label": "Chase 3"},
     ],
     "master_dimmer": 255,
+    "sample_map": {},  # key -> filename mapping for audio loops
 }
 
 
@@ -140,4 +141,19 @@ class Settings:
             if 0 <= index < len(speeds):
                 speeds[index]["hz"] = float(hz)
                 self._data["chase_speeds"] = speeds
+        self.save()
+
+    def get_sample(self, key):
+        """Get the sample filename assigned to a key."""
+        return self._data.get("sample_map", {}).get(key, "")
+
+    def set_sample(self, key, filename):
+        """Assign a sample file to a key and persist."""
+        with self._lock:
+            sm = self._data.get("sample_map", {})
+            if filename:
+                sm[key] = filename
+            else:
+                sm.pop(key, None)
+            self._data["sample_map"] = sm
         self.save()

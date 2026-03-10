@@ -6,8 +6,9 @@ Flask + Socket.IO server with touch-based interaction model.
 import json
 import os
 import argparse
+import glob
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, jsonify
 from flask_socketio import SocketIO
 
 from dmx_controller import DMXController, DummyDMXController
@@ -18,6 +19,7 @@ from settings import Settings
 # ---- Load Config ----
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.json")
+SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "samples")
 
 def load_config():
     with open(CONFIG_PATH, "r") as f:
@@ -92,6 +94,24 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+@app.route("/api/samples")
+def list_samples():
+    """Return list of audio files in samples/ directory."""
+    exts = (".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a")
+    files = []
+    if os.path.isdir(SAMPLES_DIR):
+        for f in sorted(os.listdir(SAMPLES_DIR)):
+            if f.lower().endswith(exts):
+                files.append(f)
+    return jsonify(files)
+
+
+@app.route("/samples/<path:filename>")
+def serve_sample(filename):
+    """Serve an audio file from samples/ directory."""
+    return send_from_directory(SAMPLES_DIR, filename)
+
+
 # ---- Socket.IO Events ----
 
 @socketio.on("connect")
@@ -163,6 +183,14 @@ def on_set_chase_speed(data):
 
 @socketio.on("get_settings")
 def on_get_settings():
+    socketio.emit("settings_update", settings.get_all())
+
+
+@socketio.on("set_sample")
+def on_set_sample(data):
+    key = data.get("key", "")
+    sample = data.get("sample", "")  # empty string = none
+    settings.set_sample(key, sample)
     socketio.emit("settings_update", settings.get_all())
 
 

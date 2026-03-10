@@ -52,7 +52,7 @@
             color: #e94560;
         }
 
-        /* Row layout: pad on left, settings card on right */
+        /* Row layout: pad on left, settings on right */
         .pad-row {
             display: flex;
             align-items: center;
@@ -94,9 +94,7 @@
             border-color: #ff6b81;
             color: #fff;
         }
-        .pad-key.locked {
-            border-style: dashed;
-        }
+        .pad-key.locked { border-style: dashed; }
         .pad-key.color-pad.pressed {
             box-shadow: 0 0 18px var(--pad-color, #e94560);
             border-color: var(--pad-color, #e94560);
@@ -170,6 +168,22 @@
             text-align: right;
             margin-top: 0.15rem;
         }
+
+        /* Sample dropdown */
+        .sample-select {
+            width: 100%;
+            background: #2e2e2e;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #e0e0e0;
+            padding: 0.25rem 0.4rem;
+            font-size: 0.72rem;
+            margin-top: 0.4rem;
+            cursor: pointer;
+            outline: none;
+        }
+        .sample-select:focus { border-color: #e94560; }
+        .sample-select option { background: #2e2e2e; color: #e0e0e0; }
 
         /* Projector previews */
         .proj-row {
@@ -311,8 +325,43 @@
         let keysInfo = {};
         let currentSettings = {};
         let keyStates = {};
-        const lockedKeys = new Set();    // double-click locked pads
-        const dblClickTimers = {};       // for detecting double-click
+        const lockedKeys = new Set();
+        const dblClickTimers = {};
+
+        // ---- Audio system ----
+
+        let sampleFiles = [];           // available files from server
+        const audioPlayers = {};        // key -> Audio element
+
+        async function loadSampleList() {
+            try {
+                const resp = await fetch('/api/samples');
+                sampleFiles = await resp.json();
+            } catch (e) {
+                console.warn('Could not load sample list:', e);
+                sampleFiles = [];
+            }
+        }
+
+        function startAudio(key) {
+            stopAudio(key);
+            const sampleMap = currentSettings.sample_map || {};
+            const file = sampleMap[key];
+            if (!file) return;
+            const audio = new Audio('/samples/' + encodeURIComponent(file));
+            audio.loop = true;
+            audio.play().catch(e => console.warn('Audio play failed:', e));
+            audioPlayers[key] = audio;
+        }
+
+        function stopAudio(key) {
+            const audio = audioPlayers[key];
+            if (audio) {
+                audio.pause();
+                audio.currentTime = 0;
+                delete audioPlayers[key];
+            }
+        }
 
         // ---- Socket events ----
 
@@ -335,11 +384,20 @@
         socket.on('key_state', (data) => {
             keyStates[data.key] = data.pressed;
             updatePadVisual(data.key);
+            // Audio: start/stop based on key state
+            if (data.pressed) {
+                startAudio(data.key);
+            } else {
+                stopAudio(data.key);
+            }
         });
 
         socket.on('key_states', (states) => {
             keyStates = states;
-            for (const k of Object.keys(states)) updatePadVisual(k);
+            for (const [k, v] of Object.entries(states)) {
+                updatePadVisual(k);
+                if (v) startAudio(k); else stopAudio(k);
+            }
         });
 
         socket.on('state_update', (state) => {
@@ -357,12 +415,36 @@
         // ---- Build rows ----
 
         let _built = false;
-        function tryBuild() {
+        async function tryBuild() {
             if (Object.keys(keysInfo).length === 0 || !currentSettings.colors) return;
+            if (sampleFiles.length === 0 && !_built) await loadSampleList();
             if (_built) { updateValues(); return; }
             _built = true;
             buildColorRows();
             buildAnimRows();
+        }
+
+        function makeSampleDropdown(key) {
+            const sel = document.createElement('select');
+            sel.className = 'sample-select';
+            sel.id = 'sample-' + key;
+            const none = document.createElement('option');
+            none.value = '';
+            none.textContent = '— no audio —';
+            sel.appendChild(none);
+            sampleFiles.forEach(f => {
+                const opt = document.createElement('option');
+                opt.value = f;
+                opt.textContent = f;
+                sel.appendChild(opt);
+            });
+            // Set current value
+            const sampleMap = currentSettings.sample_map || {};
+            sel.value = sampleMap[key] || '';
+            sel.addEventListener('change', () => {
+                socket.emit('set_sample', {key: key, sample: sel.value});
+            });
+            return sel;
         }
 
         function buildColorRows() {
@@ -388,7 +470,6 @@
                 keyEl.textContent = KEY_LABELS[key] || key.toUpperCase();
                 applyPadColor(keyEl, c);
                 if (keyStates[key]) keyEl.classList.add('pressed');
-
                 attachPadEvents(keyEl, key);
 
                 const label = document.createElement('div');
@@ -438,6 +519,9 @@
                     });
                 });
 
+                // Sample dropdown
+                setCell.appendChild(makeSampleDropdown(key));
+
                 row.appendChild(padCell);
                 row.appendChild(setCell);
                 container.appendChild(row);
@@ -462,7 +546,6 @@
                 keyEl.id = 'pad-' + key;
                 keyEl.textContent = KEY_LABELS[key] || key.toUpperCase();
                 if (keyStates[key]) keyEl.classList.add('pressed');
-
                 attachPadEvents(keyEl, key);
 
                 const label = document.createElement('div');
@@ -495,6 +578,9 @@
                     socket.emit(emitEvent, {index: speedIdx, hz: parseFloat(this.value)});
                 });
 
+                // Sample dropdown
+                setCell.appendChild(makeSampleDropdown(key));
+
                 row.appendChild(padCell);
                 row.appendChild(setCell);
                 container.appendChild(row);
@@ -508,30 +594,30 @@
 
             const doPress = () => {
                 if (lockedKeys.has(key)) {
-                    // unlock on any click
                     lockedKeys.delete(key);
                     el.classList.remove('locked');
                     socket.emit('key_release', {key: key});
+                    stopAudio(key);
                     return;
                 }
-
-                // Check for double-click
                 const now = Date.now();
                 if (dblClickTimers[key] && (now - dblClickTimers[key]) < DBL_CLICK_MS) {
-                    // Double-click: lock
                     delete dblClickTimers[key];
                     lockedKeys.add(key);
                     el.classList.add('locked');
                     socket.emit('key_press', {key: key});
+                    startAudio(key);
                     return;
                 }
                 dblClickTimers[key] = now;
                 socket.emit('key_press', {key: key});
+                startAudio(key);
             };
 
             const doRelease = () => {
-                if (lockedKeys.has(key)) return; // stay pressed when locked
+                if (lockedKeys.has(key)) return;
                 socket.emit('key_release', {key: key});
+                stopAudio(key);
             };
 
             el.addEventListener('mousedown', (e) => { e.preventDefault(); doPress(); });
@@ -557,7 +643,6 @@
         }
 
         function updateValues() {
-            // Update color pad colors + setting values
             for (const [key, info] of Object.entries(keysInfo)) {
                 if (info.type === 'color') {
                     const c = currentSettings.colors[info.index];
@@ -571,8 +656,12 @@
                         if (inp && document.activeElement !== inp) inp.value = c[ch];
                     });
                 }
+                // Update sample dropdown
+                const sel = document.getElementById('sample-' + key);
+                if (sel && document.activeElement !== sel) {
+                    sel.value = (currentSettings.sample_map || {})[key] || '';
+                }
             }
-            // Update speed sliders
             (currentSettings.strobe_speeds || []).forEach((s, i) => {
                 const sl = document.getElementById('strobe-sl-' + i);
                 const vl = document.getElementById('strobe-vl-' + i);
@@ -607,7 +696,6 @@
                 const s = p.state;
                 const r = s.red||0, g = s.green||0, b = s.blue||0, w = s.white||0;
                 const d = (s.dimmer||0) / 255;
-                // Reconstruct display color from RGBW
                 const dr = Math.round(Math.min(255, r + w) * d);
                 const dg = Math.round(Math.min(255, g + w) * d);
                 const db = Math.round(Math.min(255, b + w) * d);
@@ -618,7 +706,7 @@
             });
         }
 
-        // ---- Mix preview (persists last color) ----
+        // ---- Mix preview ----
 
         function updateMixPreview(state) {
             const swatch = document.getElementById('mixSwatch');
@@ -628,7 +716,6 @@
             const anim = state.active_animation;
             const d = (state.master_dimmer || 255) / 255;
 
-            // Always show last_color — never revert to black
             swatch.style.backgroundColor = 'rgb(' +
                 Math.round(lc[0]*d) + ',' +
                 Math.round(lc[1]*d) + ',' +
@@ -666,6 +753,7 @@
                 e.preventDefault();
                 heldKeys.add(key);
                 socket.emit('key_press', {key: key});
+                startAudio(key);
             }
         });
         document.addEventListener('keyup', (e) => {
@@ -675,6 +763,7 @@
                 heldKeys.delete(key);
                 if (!lockedKeys.has(key)) {
                     socket.emit('key_release', {key: key});
+                    stopAudio(key);
                 }
             }
         });
@@ -689,7 +778,6 @@
             return m ? [parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)] : [0,0,0];
         }
 
-        // Poll state
         setInterval(() => socket.emit('get_state'), 250);
     </script>
 </body>
