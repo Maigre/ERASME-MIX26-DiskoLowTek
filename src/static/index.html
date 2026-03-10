@@ -793,7 +793,10 @@
             return m ? [parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)] : [0,0,0];
         }
 
-        setInterval(() => socket.emit('get_state'), 250);
+        setInterval(() => {
+            socket.emit('get_state');
+            socket.emit('get_status');
+        }, 250);
     </script>
 </body>
 </html>

@@ -1,11 +1,14 @@
 """
 DMX Controller for ENTTEC DMX USB MK2.
 Handles serial communication using the ENTTEC Pro protocol.
+Supports hot-plug: automatic reconnection on device unplug/replug.
 """
 
 import serial
+import serial.tools.list_ports
 import threading
 import time
+import os
 
 # ENTTEC DMX USB Pro message labels
 ENTTEC_PRO_START = 0x7E
@@ -15,11 +18,17 @@ ENTTEC_PRO_GET_WIDGET_INFO = 3
 
 DMX_UNIVERSE_SIZE = 512
 
+# ENTTEC vendor/product IDs
+ENTTEC_VENDOR_ID = 0x0403
+ENTTEC_PRODUCT_IDS = {0x6001, 0x6010, 0x6014}
+
+RECONNECT_INTERVAL = 2  # seconds between reconnect attempts
+
 
 class DMXController:
-    """Controls DMX output via ENTTEC DMX USB MK2."""
+    """Controls DMX output via ENTTEC DMX USB MK2 with hot-plug support."""
 
-    def __init__(self, port="/dev/ttyUSB0", baudrate=57600):
+    def __init__(self, port="/dev/ttyUSB0", baudrate=57600, on_status_change=None):
         self.port = port
         self.baudrate = baudrate
         self.serial = None
@@ -29,12 +38,35 @@ class DMXController:
         self._thread = None
         self._lock = threading.Lock()
         self._refresh_rate = 40  # ~25 fps
+        self._connected = False
+        self._consecutive_errors = 0
+        self._max_errors = 3
+        self.on_status_change = on_status_change  # callback(connected: bool)
+
+    def _find_enttec_port(self):
+        """Auto-detect ENTTEC DMX USB device port."""
+        # First try the configured port
+        if os.path.exists(self.port):
+            return self.port
+        # Scan for ENTTEC devices
+        for p in serial.tools.list_ports.comports():
+            if p.vid == ENTTEC_VENDOR_ID and p.pid in ENTTEC_PRODUCT_IDS:
+                print(f"[DMX] Auto-detected ENTTEC at {p.device}")
+                return p.device
+            if p.description and "dmx" in p.description.lower():
+                return p.device
+        return None
 
     def connect(self):
         """Open serial connection to the ENTTEC interface."""
+        port = self._find_enttec_port()
+        if not port:
+            print(f"[DMX] No ENTTEC device found (configured: {self.port})")
+            self._set_connected(False)
+            return False
         try:
             self.serial = serial.Serial(
-                port=self.port,
+                port=port,
                 baudrate=self.baudrate,
                 timeout=1,
                 bytesize=serial.EIGHTBITS,
@@ -42,18 +74,47 @@ class DMXController:
                 parity=serial.PARITY_NONE,
             )
             time.sleep(0.5)  # Let the interface settle
-            print(f"[DMX] Connected to {self.port}")
+            self._consecutive_errors = 0
+            self._set_connected(True)
+            print(f"[DMX] Connected to {port}")
             return True
-        except serial.SerialException as e:
+        except (serial.SerialException, OSError) as e:
             print(f"[DMX] Connection failed: {e}")
+            self._set_connected(False)
             return False
+
+    def _set_connected(self, connected):
+        """Update connection state and fire callback on change."""
+        if connected != self._connected:
+            self._connected = connected
+            if self.on_status_change:
+                try:
+                    self.on_status_change(connected)
+                except Exception:
+                    pass
+
+    def _try_reconnect(self):
+        """Attempt to reconnect to the device."""
+        # Close stale handle
+        try:
+            if self.serial:
+                self.serial.close()
+        except Exception:
+            pass
+        self.serial = None
+        return self.connect()
 
     def disconnect(self):
         """Close the serial connection."""
         self.stop_sending()
-        if self.serial and self.serial.is_open:
-            self.serial.close()
-            print("[DMX] Disconnected")
+        try:
+            if self.serial and self.serial.is_open:
+                self.serial.close()
+        except Exception:
+            pass
+        self.serial = None
+        self._set_connected(False)
+        print("[DMX] Disconnected")
 
     def _build_message(self, label, data):
         """Build an ENTTEC Pro protocol message."""
@@ -70,19 +131,37 @@ class DMXController:
     def _send_dmx_frame(self):
         """Send a single DMX frame to the interface."""
         if not self.serial or not self.serial.is_open:
-            return
+            return False
         with self._lock:
             msg = self._build_message(ENTTEC_PRO_SEND_DMX, self.universe)
         try:
             self.serial.write(msg)
-        except serial.SerialException as e:
-            print(f"[DMX] Send error: {e}")
+            self._consecutive_errors = 0
+            return True
+        except (serial.SerialException, OSError) as e:
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= self._max_errors:
+                print(f"[DMX] Device lost: {e}")
+                self._set_connected(False)
+                try:
+                    self.serial.close()
+                except Exception:
+                    pass
+                self.serial = None
+            return False
 
     def _send_loop(self):
-        """Continuously send DMX frames at the configured refresh rate."""
+        """Continuously send DMX frames; reconnect on device loss."""
         while self._running:
-            self._send_dmx_frame()
-            time.sleep(1.0 / self._refresh_rate)
+            if self._connected and self.serial:
+                self._send_dmx_frame()
+                time.sleep(1.0 / self._refresh_rate)
+            else:
+                # Not connected — try to reconnect
+                if self._try_reconnect():
+                    print("[DMX] Reconnected — resuming output")
+                else:
+                    time.sleep(RECONNECT_INTERVAL)
 
     def start_sending(self):
         """Start the DMX send loop in a background thread."""
@@ -91,7 +170,7 @@ class DMXController:
         self._running = True
         self._thread = threading.Thread(target=self._send_loop, daemon=True)
         self._thread.start()
-        print("[DMX] Sending started")
+        print("[DMX] Send loop started")
 
     def stop_sending(self):
         """Stop the DMX send loop."""
@@ -99,7 +178,7 @@ class DMXController:
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
-        print("[DMX] Sending stopped")
+        print("[DMX] Send loop stopped")
 
     def set_channel(self, channel, value):
         """Set a single DMX channel value (1-indexed, 1-512)."""
@@ -135,7 +214,7 @@ class DMXController:
 
     @property
     def is_connected(self):
-        return self.serial is not None and self.serial.is_open
+        return self._connected
 
 
 class DummyDMXController:

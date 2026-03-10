@@ -1,19 +1,23 @@
 """
 Makey Makey Input Handler — Touch model.
 Maps key press/release events to color and animation touch/release actions.
+Supports hot-plug: automatic reconnection on device unplug/replug.
 """
 
 import threading
+import time
+
+RECONNECT_INTERVAL = 2  # seconds between reconnect scans
 
 
 class MakeyMakeyHandler:
-    """Listens for Makey Makey key events with press/release tracking."""
+    """Listens for Makey Makey key events with press/release tracking and hot-plug."""
 
     MAKEY_VENDOR_ID = 0x2A66
 
     def __init__(self, touch_mapping, on_color_touch=None, on_color_release=None,
                  on_animation_touch=None, on_animation_release=None,
-                 key_state_callback=None):
+                 key_state_callback=None, on_status_change=None):
         """
         Args:
             touch_mapping: dict with "colors" and "animations" key mappings
@@ -22,6 +26,7 @@ class MakeyMakeyHandler:
             on_animation_touch: fn(anim_type, speed_index)
             on_animation_release: fn(anim_type, speed_index)
             key_state_callback: fn(key, pressed) for UI updates
+            on_status_change: fn(connected: bool) called on connect/disconnect
         """
         self.touch_mapping = touch_mapping
         self.on_color_touch = on_color_touch
@@ -29,12 +34,14 @@ class MakeyMakeyHandler:
         self.on_animation_touch = on_animation_touch
         self.on_animation_release = on_animation_release
         self.key_state_callback = key_state_callback
+        self.on_status_change = on_status_change
 
         self._running = False
         self._thread = None
         self._device = None
         self._evdev_available = False
         self._key_states = {}
+        self._connected = False
 
         # Build reverse lookup: key_name -> {"type": "color"/"animation", ...}
         self._key_actions = {}
@@ -53,11 +60,25 @@ class MakeyMakeyHandler:
         except ImportError:
             print("[MakeyMakey] evdev not available — web-only mode")
 
+    def _set_connected(self, connected):
+        """Update connection state and fire callback on change."""
+        if connected != self._connected:
+            self._connected = connected
+            if self.on_status_change:
+                try:
+                    self.on_status_change(connected)
+                except Exception:
+                    pass
+
     def find_makey_makey(self):
         if not self._evdev_available:
             return None
         import evdev
-        devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+        try:
+            devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+        except Exception as e:
+            print(f"[MakeyMakey] Error listing devices: {e}")
+            return None
         for device in devices:
             name_lower = device.name.lower()
             if ("makey" in name_lower
@@ -71,36 +92,70 @@ class MakeyMakeyHandler:
                 ):
                     print(f"[MakeyMakey] Found: {device.name} at {device.path}")
                     return device
-        print("[MakeyMakey] No Makey Makey found. Available devices:")
-        for device in devices:
-            print(f"  - {device.name} ({device.path}) vendor={hex(device.info.vendor)}")
         return None
 
     def start(self):
+        """Start the input listener with auto-reconnect."""
         if not self._evdev_available:
             print("[MakeyMakey] Running in web-only mode (no evdev)")
             return False
-        self._device = self.find_makey_makey()
-        if not self._device:
-            print("[MakeyMakey] No device found — web-only mode")
-            return False
         self._running = True
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        print("[MakeyMakey] Listening for input")
-        return True
+        return True  # thread started; actual device may connect later
 
     def stop(self):
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
-        if self._device:
-            self._device.close()
-            self._device = None
+        self._close_device()
+        self._set_connected(False)
         print("[MakeyMakey] Stopped")
 
-    def _read_loop(self):
+    def _close_device(self):
+        """Safely close the current device."""
+        try:
+            if self._device:
+                self._device.close()
+        except Exception:
+            pass
+        self._device = None
+
+    def _run_loop(self):
+        """Main loop: connect → read → on disconnect wait → retry."""
+        while self._running:
+            if not self._device:
+                self._device = self.find_makey_makey()
+                if self._device:
+                    self._set_connected(True)
+                    print("[MakeyMakey] Listening for input")
+                else:
+                    self._set_connected(False)
+                    # Wait before next scan
+                    self._interruptible_sleep(RECONNECT_INTERVAL)
+                    continue
+
+            # Read events until device lost
+            self._read_events()
+
+            # Device lost — clean up and loop back to reconnect
+            self._close_device()
+            self._set_connected(False)
+            # Release all held keys on disconnect
+            self._release_all_keys()
+            if self._running:
+                print("[MakeyMakey] Device lost — will try to reconnect...")
+                self._interruptible_sleep(RECONNECT_INTERVAL)
+
+    def _interruptible_sleep(self, seconds):
+        """Sleep in small increments so stop() is responsive."""
+        end = time.monotonic() + seconds
+        while self._running and time.monotonic() < end:
+            time.sleep(0.2)
+
+    def _read_events(self):
+        """Read events from the device until an error occurs."""
         import evdev
         from evdev import ecodes
         try:
@@ -117,9 +172,18 @@ class MakeyMakeyHandler:
                         self._handle_touch(short, pressed=True)
                     elif event.value == 0:  # release
                         self._handle_touch(short, pressed=False)
+        except (OSError, IOError) as e:
+            if self._running:
+                print(f"[MakeyMakey] Read error (device unplugged?): {e}")
         except Exception as e:
-            print(f"[MakeyMakey] Read error: {e}")
-            self._running = False
+            if self._running:
+                print(f"[MakeyMakey] Unexpected error: {e}")
+
+    def _release_all_keys(self):
+        """Release any keys that were held when the device was lost."""
+        held = [k for k, v in self._key_states.items() if v]
+        for key in held:
+            self._handle_touch(key, pressed=False)
 
     def _handle_touch(self, key, pressed):
         """Route a key press/release to the appropriate callback."""
@@ -186,3 +250,7 @@ class MakeyMakeyHandler:
     @property
     def is_running(self):
         return self._running
+
+    @property
+    def is_connected(self):
+        return self._connected

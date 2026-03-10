@@ -37,7 +37,11 @@ def create_app(use_dummy=False):
     config = load_config()
     settings = Settings()
 
-    # DMX
+    # DMX — tolerates missing device, reconnects automatically
+    def on_dmx_status(connected):
+        print(f"[Server] DMX {'connected' if connected else 'disconnected'}")
+        _emit_status()
+
     if use_dummy:
         dmx = DummyDMXController()
     else:
@@ -45,8 +49,9 @@ def create_app(use_dummy=False):
         dmx = DMXController(
             port=dmx_cfg.get("port", "/dev/ttyUSB0"),
             baudrate=dmx_cfg.get("baudrate", 57600),
+            on_status_change=on_dmx_status,
         )
-    dmx.connect()
+    dmx.connect()      # OK if it fails — send loop will keep retrying
     dmx.start_sending()
 
     # Lighting Engine
@@ -58,12 +63,16 @@ def create_app(use_dummy=False):
             channel_map=proj_cfg["channels"],
         )
 
-    # Makey Makey
+    # Makey Makey — tolerates missing device, reconnects automatically
     touch_mapping = config.get("touch_mapping", {})
 
     def on_key_state(key, pressed):
         socketio.emit("key_state", {"key": key, "pressed": pressed})
         socketio.emit("state_update", engine.get_state())
+
+    def on_makey_status(connected):
+        print(f"[Server] Makey Makey {'connected' if connected else 'disconnected'}")
+        _emit_status()
 
     makey = MakeyMakeyHandler(
         touch_mapping=touch_mapping,
@@ -72,17 +81,28 @@ def create_app(use_dummy=False):
         on_animation_touch=engine.animation_touch,
         on_animation_release=engine.animation_release,
         key_state_callback=on_key_state,
+        on_status_change=on_makey_status,
     )
-    makey_connected = makey.start()
+    makey.start()  # starts reconnect loop even if device is absent
 
-    return dmx, engine, makey, makey_connected, config, settings
+    return dmx, engine, makey, config, settings
+
+
+def _emit_status():
+    """Broadcast current device status to all connected clients."""
+    if dmx is None or makey is None:
+        return
+    socketio.emit("status", {
+        "dmx_connected": dmx.is_connected,
+        "dmx_dummy": isinstance(dmx, DummyDMXController),
+        "makey_connected": makey.is_connected,
+    })
 
 
 # ---- Globals ----
 dmx = None
 engine = None
 makey = None
-makey_connected = False
 config = None
 settings = None
 
@@ -119,7 +139,7 @@ def on_connect():
     socketio.emit("status", {
         "dmx_connected": dmx.is_connected,
         "dmx_dummy": isinstance(dmx, DummyDMXController),
-        "makey_connected": makey_connected,
+        "makey_connected": makey.is_connected,
     })
     socketio.emit("state_update", engine.get_state())
     socketio.emit("key_states", makey.get_key_states())
@@ -130,6 +150,11 @@ def on_connect():
 @socketio.on("get_state")
 def on_get_state():
     socketio.emit("state_update", engine.get_state())
+
+
+@socketio.on("get_status")
+def on_get_status():
+    _emit_status()
 
 
 @socketio.on("key_press")
@@ -205,7 +230,7 @@ def on_set_sample(data):
 # ---- Main ----
 
 def main():
-    global dmx, engine, makey, makey_connected, config, settings
+    global dmx, engine, makey, config, settings
 
     parser = argparse.ArgumentParser(description="MIX LowTech26 DMX Controller")
     parser.add_argument("--dummy", action="store_true", help="Use dummy DMX (no hardware)")
@@ -213,7 +238,7 @@ def main():
     parser.add_argument("--host", type=str, default=None, help="Web server host")
     args = parser.parse_args()
 
-    dmx, engine, makey, makey_connected, config, settings = create_app(use_dummy=args.dummy)
+    dmx, engine, makey, config, settings = create_app(use_dummy=args.dummy)
 
     srv_cfg = config.get("server", {})
     host = args.host or srv_cfg.get("host", "0.0.0.0")
@@ -222,8 +247,8 @@ def main():
     print(f"\n{'='*50}")
     print(f"  MIX LowTech26 — DMX Controller")
     print(f"  Web UI: http://{host}:{port}")
-    print(f"  DMX: {'Dummy' if isinstance(dmx, DummyDMXController) else dmx.port}")
-    print(f"  Makey: {'Connected' if makey_connected else 'Web-only'}")
+    print(f"  DMX: {'Dummy' if isinstance(dmx, DummyDMXController) else ('Connected' if dmx.is_connected else 'Waiting...')}")
+    print(f"  Makey: {'Connected' if makey.is_connected else 'Waiting...'}")
     print(f"{'='*50}\n")
 
     try:
