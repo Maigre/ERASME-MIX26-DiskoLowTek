@@ -27,6 +27,7 @@ DEFAULT_SETTINGS = {
         {"hz": 8,  "label": "Chase 3"},
     ],
     "master_dimmer": 255,
+    "master_zoom": 128,
     "sample_map": {},  # key -> filename mapping for audio loops
 }
 

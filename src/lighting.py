@@ -96,6 +96,9 @@ class LightingEngine:
     def add_projector(self, name, start_channel, channel_map):
         proj = Projector(name, start_channel, channel_map, self.dmx)
         self.projectors.append(proj)
+        # Apply saved zoom
+        zoom = self.settings.get("master_zoom", 128)
+        proj.set_zoom(zoom)
         return proj
 
     # ---- Touch API ----
@@ -270,6 +273,13 @@ class LightingEngine:
         elif not anim and self._active_colors:
             mixed = self._mix_active_colors()
             self._apply_fixed_color(mixed)
+
+    def set_master_zoom(self, value):
+        """Set zoom on all projectors (0-255)."""
+        value = max(0, min(255, int(value)))
+        self.settings.set("master_zoom", value)
+        for p in self.projectors:
+            p.set_zoom(value)
 
     def update_strobe_if_active(self):
         """Re-apply DMX strobe if strobe animation is currently active."""

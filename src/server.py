@@ -154,6 +154,14 @@ def on_set_master_dimmer(data):
     socketio.emit("settings_update", settings.get_all())
 
 
+@socketio.on("set_master_zoom")
+def on_set_master_zoom(data):
+    value = data.get("value", 128)
+    engine.set_master_zoom(value)
+    socketio.emit("state_update", engine.get_state())
+    socketio.emit("settings_update", settings.get_all())
+
+
 @socketio.on("set_color")
 def on_set_color(data):
     index = data.get("index", 0)
